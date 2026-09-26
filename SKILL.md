@@ -74,9 +74,9 @@ The script returns a JSON array of `{ project, article, granularity, timestamp, 
 
 If the script exits non-zero (no data for that article/period — e.g. the article didn't exist yet, or there's simply no traffic recorded), tell the user no pageview data was found for that range and ask if they'd like to try a different period.
 
-## Step 3: Analyze trend, anomalies, and seasonality
+## Step 3: Calculate metrics (trend, anomalies, seasonality)
 
-Repeat Steps 1–2 once per language/article the user asked about, then run each result through the analysis script — don't compute these numbers yourself, the script's arithmetic is the source of truth:
+Repeat Steps 1–2 once per language/article the user asked about, then run each result through the analysis script for every case before moving on — don't compute these numbers yourself, the script's arithmetic is the source of truth:
 
 ```bash
 node scripts/get_pageviews.js "<article key>" --lang <code> | node scripts/analyze_pageviews.js
@@ -84,19 +84,23 @@ node scripts/get_pageviews.js "<article key>" --lang <code> | node scripts/analy
 
 It returns:
 
-- **`trend`** — `direction` (up/down/flat), `totalChangePct` (first vs last point), `regressionSlopePctOfMean` (overall trend strength, normalized), `halfOverHalfChangePct` (first-half vs second-half average, a sanity check against a trend driven by one outlier). **If `totalChangePct` and `halfOverHalfChangePct` disagree in sign, trust `direction`/`halfOverHalfChangePct`** — it means the very first or last data point is an outlier (e.g. a partial month) skewing the naive endpoint comparison; mention this in your conclusion instead of reporting the misleading raw endpoint change.
+- **`trend`** — `direction` (up/down/flat), `totalChangePct` (first vs last point), `regressionSlopePctOfMean` (overall trend strength, normalized), `halfOverHalfChangePct` (first-half vs second-half average, a sanity check against a trend driven by one outlier). **If `totalChangePct` and `halfOverHalfChangePct` disagree in sign, trust `direction`/`halfOverHalfChangePct`** — it means the very first or last data point is an outlier (e.g. a partial month) skewing the naive endpoint comparison.
 - **`anomalies`** — array of `{ timestamp, value, zScore, type: "spike"|"drop" }`, points that deviate from their local neighborhood by more than 2 standard deviations.
 - **`seasonality`** — `{ applicable, likelySeasonal, coefficientOfVariation, peakMonths, lowMonths, monthlyAverages }` when granularity is monthly with ≥12 data points; otherwise `{ applicable: false, reason }` — in that case, just say seasonality can't be assessed for this range/granularity rather than guessing.
 
-Turn these numbers into a plain-language conclusion covering all three (trend, anomalies, seasonality) for each language analyzed.
+## Step 4: Write the conclusion
 
-## Step 4: Compare across languages (only if the user asked about 2+ languages/countries)
+Write the output in plain language, in the same language the user wrote their prompt in (same rule as Step 1 — don't default to English). **Never show the user raw field/variable names** (e.g. `regressionSlopePctOfMean`, `halfOverHalfChangePct`, `coefficientOfVariation`, `zScore`) — translate each metric into a clear plain-language statement backed by the actual numbers behind it (percentages, dates, magnitudes), so the reasoning stays traceable without exposing the JSON shape.
 
-If only one language was requested, skip this step — there's nothing to compare.
+For each case (article/language) analyzed, give a clear per-case readout based on the metrics from Step 3, one line per category:
 
-With 2 or more, after analyzing each individually:
+- **Trend** — direction and strength in plain words with a percentage (e.g. "views grew by roughly 24% over the period").
+- **Anomalies** — dates and nature of spikes/drops in plain words (e.g. "in March 2025 there was a sharp spike, several times above the usual level"); if there are none, say so.
+- **Seasonality** — whether it's seasonal, which months are peak/low; if it can't be assessed (too little data or non-monthly granularity), say so directly instead of guessing.
 
-- Rank them by trend strength/direction (which is growing fastest, which is declining).
-- Note any anomalies that land on the same or nearby timestamps across multiple languages (a shared spike/drop suggests a common external cause, e.g. news event, rather than something language-specific).
+Then write the final **Conclusion:**
 
-This logic doesn't change based on how many languages were requested — 2, 3, or more are handled the same way.
+- **Only one case analyzed** — a conclusion for that single case: a short (2–4 sentence) but clear summary that synthesizes its trend + anomalies + seasonality into one picture.
+- **Two or more cases analyzed** — a comparative conclusion between the cases: which one is growing/declining fastest, whether anomalies coincide in time across cases (hinting at a shared external cause, e.g. a news event) or are case-specific, and how seasonality differs between them. This works the same way regardless of whether 2, 3, or more cases were analyzed.
+
+Every statement, in the per-case readout and in the Conclusion, must be grounded in the actual numbers from Step 3 (percentages, dates, magnitude of deviation) — never a vague phrase like "seems to have grown a bit."
