@@ -69,7 +69,18 @@ function parseArgs(argv) {
     process.exit(1);
   }
 
-  const end = args.end || formatDate(new Date());
+  let defaultEndDate = new Date();
+  if (args.granularity === "monthly") {
+    const firstOfThisMonth = new Date(
+      Date.UTC(
+        defaultEndDate.getUTCFullYear(),
+        defaultEndDate.getUTCMonth(),
+        1,
+      ),
+    );
+    defaultEndDate = new Date(firstOfThisMonth.getTime() - 24 * 60 * 60 * 1000);
+  }
+  const end = args.end || formatDate(defaultEndDate);
   let start = args.start;
   if (!start) {
     const endDate = new Date(
