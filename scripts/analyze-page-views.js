@@ -4,8 +4,13 @@
  * article and calculate metrics. Fetches languages concurrently. Does not
  * produce prose conclusions and does not generate a PDF.
  *
+ * At monthly granularity the window is snapped to whole calendar months:
+ * the API counts only the days inside the requested range, so a range that
+ * starts or ends mid-month yields a month-labelled bucket holding a few
+ * days of views. See lib/dates.js.
+ *
  * Usage:
- *   bun scripts/analyze-page-views.js --languages '{"pl":"Post przerywany","en":"Intermittent fasting"}' \
+ *   bun scripts/analyze-page-views.js --languages '{"cs":"Přerušovaný půst","en":"Intermittent fasting"}' \
  *     [--start 2024-09-01] [--end 2026-09-01] [--granularity monthly] \
  *     [--access all-access] [--agent user] [--article-title "Intermittent fasting"] [--pretty]
  *
@@ -15,6 +20,12 @@
  */
 
 import { getPageviews, WikiRequestError } from "./lib/request.js";
+import {
+  DEFAULT_MONTHS,
+  DateRangeError,
+  resolveDateRange,
+  toApiDate,
+} from "./lib/dates.js";
 import {
   calculateStatistics,
   calculateTrend,
@@ -57,18 +68,24 @@ calculates trend, seasonality, anomaly, and comparison metrics.
 
 Options:
   --languages JSON          JSON object mapping language code -> title, e.g.
-                             '{"pl":"Post przerywany","en":"Intermittent fasting"}'
+                             '{"cs":"Přerušovaný půst","en":"Intermittent fasting"}'
                              If omitted, the same JSON shape is read from stdin.
   --article-title TITLE     Human-readable topic name to include in the output (optional)
-  --start DATE               Period start, YYYY-MM-DD (default: 2 years before --end)
-  --end DATE                  Period end, YYYY-MM-DD (default: yesterday)
+  --start DATE               Period start, YYYY-MM-DD
+                             (default: ${DEFAULT_MONTHS} complete months back from --end, or
+                              2 years back at daily granularity)
+  --end DATE                 Period end, YYYY-MM-DD (default: the last complete
+                              month, or yesterday at daily granularity)
+                             At monthly granularity both bounds are snapped to
+                              whole calendar months; any correction is reported
+                              in period.adjustments.
   --granularity VALUE        daily | monthly (default: monthly)
   --access VALUE             all-access | desktop | mobile-app | mobile-web (default: all-access)
   --agent VALUE              all-agents | user | spider | bot (default: user)
   --pretty                   Pretty-print JSON output
 
 Example:
-  analyze-page-views.js --languages '{"en":"Intermittent fasting","pl":"Post przerywany"}'`);
+  analyze-page-views.js --languages '{"en":"Intermittent fasting","cs":"Přerušovaný půst"}'`);
 }
 
 function readStdin() {
@@ -79,40 +96,6 @@ function readStdin() {
     process.stdin.on("end", () => resolve(data));
     process.stdin.on("error", reject);
   });
-}
-
-function formatDate(date) {
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(date.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-function toApiDate(isoDate) {
-  return isoDate.replaceAll("-", "");
-}
-
-function resolveDateRange({ start, end, granularity }) {
-  let endDate = end ? new Date(`${end}T00:00:00Z`) : new Date();
-  if (!end && granularity === "monthly") {
-    // Avoid a partial current-month bucket by defaulting to end of last month.
-    const firstOfThisMonth = new Date(
-      Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1),
-    );
-    endDate = new Date(firstOfThisMonth.getTime() - 24 * 60 * 60 * 1000);
-  } else if (!end) {
-    endDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
-  }
-
-  let startDate;
-  if (start) {
-    startDate = new Date(`${start}T00:00:00Z`);
-  } else {
-    startDate = new Date(endDate);
-    startDate.setUTCFullYear(startDate.getUTCFullYear() - 2);
-  }
-
-  return { start: formatDate(startDate), end: formatDate(endDate) };
 }
 
 async function main() {
@@ -173,11 +156,21 @@ async function main() {
     return;
   }
 
-  const period = resolveDateRange({
-    start: args.start,
-    end: args.end,
-    granularity: args.granularity,
-  });
+  let period;
+  try {
+    period = resolveDateRange({
+      start: args.start,
+      end: args.end,
+      granularity: args.granularity,
+    });
+  } catch (err) {
+    if (err instanceof DateRangeError) {
+      console.error(`Error: ${err.message}`);
+      process.exitCode = 2;
+      return;
+    }
+    throw err;
+  }
   const startDate = toApiDate(period.start);
   const endDate = toApiDate(period.end);
 
@@ -234,7 +227,16 @@ async function main() {
 
   const output = {
     article: args.articleTitle ? { title: args.articleTitle } : undefined,
-    period,
+    period: {
+      start: period.start,
+      end: period.end,
+      granularity: args.granularity,
+      // Only present when the requested window had to be corrected; tell the
+      // user which window was actually analysed when it is.
+      ...(period.adjustments.length > 0
+        ? { adjustments: period.adjustments }
+        : {}),
+    },
     languages,
     comparison,
   };

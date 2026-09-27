@@ -44,10 +44,14 @@ see their full flag list.
      --article-title "Intermittent fasting" \
      --pretty
    ```
-   Key flags (all optional): `--start`/`--end` (`YYYY-MM-DD`, default 2-year window
-   ending yesterday — only set if the user asked for a specific period), `--granularity`
-   (`daily`|`monthly`, default `monthly`), `--access` (default `all-access`), `--agent`
-   (default `user`, human traffic only). See `references/metrics.md` for what every
+   Key flags (all optional): `--start`/`--end` (`YYYY-MM-DD`, default: the last 24
+   complete months — only set if the user asked for a specific period),
+   `--granularity` (`daily`|`monthly`, default `monthly`), `--access` (default
+   `all-access`), `--agent` (default `user`, human traffic only). At monthly
+   granularity the window is snapped to whole calendar months so no bucket is partial;
+   if that moved a bound the script returns `period.adjustments` — when it's present,
+   state the window actually analysed rather than the one that was asked for.
+   See `references/metrics.md` for what every
    returned field (`trend`, `anomalies`, `seasonality`, `comparison`) means and how to
    read it correctly. If the script errors, tell the user and ask about a different
    period/language — don't invent data.

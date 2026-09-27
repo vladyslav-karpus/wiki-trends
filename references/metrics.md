@@ -7,7 +7,7 @@ read it.
 
 ```json
 {
-  "period": { "start": "2024-08-31", "end": "2026-08-31" },
+  "period": { "start": "2024-09-01", "end": "2026-08-31", "granularity": "monthly" },
   "languages": {
     "en": { "title": "...", "statistics": {}, "trend": {}, "seasonality": {}, "anomalies": [], "pageviews": [] },
     "cs": { "...": "..." }
@@ -15,6 +15,16 @@ read it.
   "comparison": { "...": "..." }
 }
 ```
+
+## `period`
+
+The window actually analysed. At monthly granularity it always covers whole calendar
+months — the API counts only the days inside the requested range, so a mid-month bound
+would return a month-labelled bucket holding a few days of views.
+
+`adjustments` appears only when a requested bound had to be moved (mid-month bound, or
+an end inside the unfinished current month). When present, tell the user which window
+was analysed instead of the one they asked for.
 
 ## `trend`
 
