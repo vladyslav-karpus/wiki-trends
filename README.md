@@ -109,11 +109,9 @@ bun test
 - Unit tests (`bun test`) for every computation module.
 - Manual runs of all three scripts against the live Wikimedia API on real
   multi-language articles, with visual inspection of the generated PDF.
-- Built iteratively with Claude Code as a pair-programming partner: writing
-  and refactoring the scripts under `scripts/lib/`, drafting the rules in
-  `SKILL.md`/`references/`, and generating the tests — each step then checked
-  by a human and by the test suite rather than accepting generated code
-  blindly.
+- Numbers and trends cross-checked against
+  [Pageviews Analysis](https://pageviews.wmcloud.org/) (Wikimedia Cloud
+  Services), an independent tool built on the same Pageviews API.
 
 ## Known limitations
 
