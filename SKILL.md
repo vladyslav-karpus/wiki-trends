@@ -1,106 +1,199 @@
 ---
 name: wiki-trends
-description: Analyzes Wikipedia pageview trends — fetches pageview statistics for one or more articles, compares traffic over time, and surfaces spikes, drops, and seasonal patterns. Use when the user wants to compare pageviews across articles or time periods.
+description: Analyzes Wikipedia pageview trends — fetches pageview statistics for one or more articles or language editions, compares traffic over time, and surfaces spikes, drops, and seasonal patterns. Use when the user wants to analyze or compare Wikipedia pageviews across articles, languages, or time periods.
 ---
 
-## Step 1: Resolve the article and its language versions
+This skill uses three deterministic scripts (run with [Bun](https://bun.sh)) for data
+fetching, metric calculation, and PDF generation. **You** are responsible for talking to
+the user, deciding when you have enough information to continue, and writing the
+interpretation/conclusion — the scripts never do that.
 
-1. **Identify the article** the user wants analyzed from their prompt, and determine its title on **English Wikipedia** (translate/normalize if the user asked in another language).
+Run all four steps below for every analysis. Step 4 (the PDF) is not an optional extra
+that only runs if the user explicitly asks for a report/file — it's the standard last
+step that follows the conclusion automatically, every time.
 
-2. **Run the language-links script** with that English title:
+## Available scripts
 
-   ```bash
-   node scripts/get_language_links.js "<English article title>"
-   ```
+- **`scripts/get-language-links.js`** — checks whether an article and its requested
+  language versions exist. No pageview analysis.
+- **`scripts/analyze-page-views.js`** — fetches pageviews for one or more language
+  versions concurrently and computes statistics/trend/seasonality/anomalies/comparison.
+  No prose, no PDF.
+- **`scripts/generate-pdf.js`** — renders the PDF report from metrics you already have
+  plus the conclusion you write. Does not fetch data or decide anything.
 
-   Example:
+Run all of them with `bun`, from the skill directory root. Add `--help` to any of them to
+see their full flag list.
 
-   ```bash
-   node scripts/get_language_links.js "Intermittent fasting"
-   ```
+## Step 1 — Discover the article and its language versions
 
-   This queries the English Wikipedia REST API (`en.wikipedia.org`) and returns a JSON array of every language version the article has, e.g.:
-
-   ```json
-   [
-     {
-       "code": "uk",
-       "name": "українська",
-       "key": "Інтервальне_голодування",
-       "title": "Інтервальне голодування"
-     },
-     {
-       "code": "de",
-       "name": "Deutsch",
-       "key": "Intermittierendes_Fasten",
-       "title": "Intermittierendes Fasten"
-     }
-   ]
-   ```
-
-   - `code` — the Wikipedia project/language code (used to build pageview API URLs like `https://wikimedia.org/api/rest_v1/metrics/pageviews/.../<code>.wikipedia/...`).
-   - `title` — the human-readable title in that language.
-   - Add `--pretty` for indented output when inspecting results manually.
-
-3. **If the article doesn't exist at all** (no English Wikipedia article found — the script exits non-zero with an error on stderr; check the exit code before parsing stdout as JSON) — you MUST end your reply with an explicit question asking the user to try a different topic/title. Do not silently move on or guess a title yourself.
-
-4. **If the article exists but has no version in the language the user asked about** (the requested language `code` is missing from the returned list) — you MUST end your reply with an explicit question: tell the user that language edition doesn't exist for this article, and ask whether they want to try a different language. Do not silently move on or guess.
-
-Both of these MUST be actual questions, not just statements, and you must reply in the same language the user wrote their prompt in (match the user, don't default to English or Ukrainian). Wait for the user's answer before continuing.
-
-## Step 2: Fetch pageview counts
-
-Once you have the resolved article `key` and language `code` for the requested edition (from Step 1), fetch its pageview history:
+Identify the article/topic the user means. **Always make the first call on English
+Wikipedia and without `--languages`**, so you get back every language version that
+exists for the article in one request — do this even if the user only asked about one
+or two specific languages, and even if the user's own prompt/article title is in another
+language:
 
 ```bash
-node scripts/get_pageviews.js "<article key>" --lang <code> [--access <all-access|desktop|mobile-app|mobile-web>] [--agent <all-agents|user|spider|bot>] [--granularity <daily|monthly>] [--start YYYYMMDD] [--end YYYYMMDD]
+bun scripts/get-language-links.js --article "intermittent fasting"
 ```
 
-Example:
+- Output shape (abridged — a real response lists every existing language edition):
+  ```json
+  {
+    "article": { "exists": true, "title": "Intermittent fasting" },
+    "languages": {
+      "en": { "exists": true, "title": "Intermittent fasting" },
+      "cs": { "exists": true, "title": "Přerušovaný půst" },
+      "de": { "exists": true, "title": "Intermittierendes Fasten" }
+    }
+  }
+  ```
+- `--languages pl,cs` (comma-separated codes) narrows the response to just those codes
+  instead of returning everything — only use it for a second, follow-up lookup (e.g. after
+  the user names a different language than what you first checked); never use it for the
+  initial call.
+
+Rules:
+
+- **If `article.exists` is `false`** — tell the user the article could not be found and
+  ask them to clarify the topic/title. Do not guess a different title yourself.
+- **If the user named specific languages, check their codes against the full
+  `languages` map you got back.** If one isn't present, tell the user that language
+  edition doesn't exist for this article — and since you already have the full list,
+  you can offer a couple of alternatives from it — then ask whether they want a
+  different language. Do **not** silently substitute another language or drop it
+  without asking.
+- Both of the above must be real questions to the user, and you must wait for their
+  answer before continuing. Reply in the same language the user wrote their prompt in.
+- Only proceed to Step 2 once you have at least one confirmed article/language pair.
+
+## Step 2 — Fetch pageviews and calculate metrics
+
+Build a JSON object mapping each confirmed language code to its title in that language
+(from Step 1's output — use `article.title` for the source language itself if you're
+analyzing it too), and pass it to `analyze-page-views.js`:
 
 ```bash
-node scripts/get_pageviews.js "Intermittent_fasting" --lang en
+bun scripts/analyze-page-views.js \
+  --languages '{"en":"Intermittent fasting","cs":"Přerušovaný půst"}' \
+  --article-title "Intermittent fasting" \
+  --pretty
 ```
 
-Parameter defaults — only pass a flag if the user explicitly specified that parameter, otherwise let the script default:
+Useful flags (all optional, defaults shown):
 
-- `--lang` — the language `code` from Step 1 (defaults to `en` if omitted).
-- `--access` — defaults to `all-access` (all platforms combined) unless the user asked for a specific one (desktop / mobile app / mobile web).
-- `--agent` — defaults to `user` (human traffic only, excludes bots/spiders) unless the user asked otherwise.
-- `--granularity` — defaults to `monthly` unless the user asked for daily data.
-- `--start` / `--end` — default to a 2-year window ending today, unless the user gave a specific period.
+- `--start` / `--end` — `YYYY-MM-DD`. Default: a 2-year window ending yesterday (or end
+  of last month for monthly granularity, to avoid a partial current-month bucket). Only
+  pass these if the user asked for a specific period.
+- `--granularity` — `daily` or `monthly` (default `monthly`).
+- `--access` — `all-access` (default), `desktop`, `mobile-app`, `mobile-web`.
+- `--agent` — `user` (default, human traffic only), `all-agents`, `spider`, `bot`.
 
-The script returns a JSON array of `{ project, article, granularity, timestamp, access, agent, views }` objects, one per time bucket (`timestamp` format `YYYYMMDD00`).
+The script fetches all requested languages concurrently and returns:
 
-If the script exits non-zero (no data for that article/period — e.g. the article didn't exist yet, or there's simply no traffic recorded), tell the user no pageview data was found for that range and ask if they'd like to try a different period.
+```json
+{
+  "period": { "start": "2024-08-31", "end": "2026-08-31" },
+  "languages": {
+    "en": { "title": "...", "statistics": {}, "trend": {}, "seasonality": {}, "anomalies": [], "pageviews": [] },
+    "cs": { "...": "..." }
+  },
+  "comparison": { "...": "..." }
+}
+```
 
-## Step 3: Calculate metrics (trend, anomalies, seasonality)
+Field notes:
 
-Repeat Steps 1–2 once per language/article the user asked about, then run each result through the analysis script for every case before moving on — don't compute these numbers yourself, the script's arithmetic is the source of truth:
+- **`trend.direction`** / **`trend.totalChangePercent`** (first vs last point) /
+  **`trend.regressionSlopePercentOfMean`** (overall strength, normalized) /
+  **`trend.halfOverHalfChangePercent`** (first-half vs second-half average — a sanity
+  check). **If `totalChangePercent` and `halfOverHalfChangePercent` disagree in sign,
+  trust `direction`/`halfOverHalfChangePercent`** — it means the very first or last point
+  is an outlier skewing the naive endpoint comparison.
+- **`anomalies`** — `{ timestamp, value, zScore, type: "spike"|"drop" }`, points that
+  deviate from their local neighborhood by more than 2 standard deviations.
+- **`seasonality`** — `{ applicable, likelySeasonal, coefficientOfVariation, peakMonths,
+  lowMonths, monthlyAverages }` when monthly with ≥12 points covering all 12 months;
+  otherwise `{ applicable: false, reason }` — say seasonality can't be assessed rather
+  than guessing.
+- **`comparison`** (present when 2+ languages) — `rankedByTotalViews`,
+  `rankedByTrendStrength`, `trendDirectionByLanguage`, and `sharedAnomalyDates` (anomalies
+  landing on the same timestamp across languages — a hint, not proof, of a shared cause).
+
+If the script errors (e.g. no pageview data for that title/period), tell the user and ask
+if they'd like to try a different period or language — don't invent data.
+
+## Step 3 — Write the conclusion
+
+Base every statement strictly on the metrics from Step 2. Never show the user raw
+field/variable names (`regressionSlopePercentOfMean`, `coefficientOfVariation`, `zScore`,
+etc.) — translate each into a plain-language statement backed by the actual numbers
+(percentages, dates, magnitudes) so the reasoning stays traceable.
+
+Clearly separate:
+
+- **Observed metrics** — what the numbers show (e.g. "views grew by roughly 24% over the
+  period").
+- **Interpretation** — what that plausibly means about interest in the topic.
+- **Hypothesis** — a possible but unconfirmed explanation for an anomaly or difference,
+  explicitly labeled as a hypothesis.
+
+Never claim that a pageview trend proves real-world demand, intent, or causation — present
+it as evidence that may support a hypothesis, not as proof. Never fabricate an explanation
+for an anomaly.
+
+Per language, cover:
+
+- **Trend** — direction and strength with a percentage.
+- **Anomalies** — dates and nature of spikes/drops in plain words, or "none" if empty.
+- **Seasonality** — seasonal or not, peak/low months; or that it isn't assessable, and why.
+
+Then a **Conclusion**:
+
+- **One language analyzed** — a short (2–4 sentence) synthesis of its trend + anomalies +
+  seasonality.
+- **Two or more languages** — a comparative conclusion: which is growing/declining
+  fastest, whether anomalies coincide across languages (hinting at a shared external
+  cause) or are language-specific, and how seasonality differs.
+
+Write this entire Step 3 output (per-language readout + conclusion) in the same language
+the user wrote their prompt in. This is the text you both reply to the user with **and**
+pass to Step 4 — write it once, reuse it verbatim in both places, don't summarize or
+shorten it for the PDF.
+
+## Step 4 — Generate the PDF
+
+Do this right after Step 3, for every analysis, whether or not the user asked for a PDF —
+delivering the conclusion means delivering it both in chat and as this PDF.
+
+The PDF is: title page → one pageview chart per analyzed article/language → the Step 3
+analysis text. `generate-pdf.js` draws the charts from the metrics but does not generate
+any of its own text — **every string you pass it must already be in the user's language**,
+including `--title`, `--y-label`, and `--x-label`.
+
+`--analysis` supports light Markdown (`# `/`## ` headings, `- `/`* ` bullets, `**bold**`),
+rendered properly rather than shown as raw symbols — so you can pass the same
+Markdown-formatted text you write in the chat reply as-is, no need to strip formatting.
+
+Save the Step 2 JSON output to a file (or pipe it directly), then:
 
 ```bash
-node scripts/get_pageviews.js "<article key>" --lang <code> | node scripts/analyze_pageviews.js
+bun scripts/analyze-page-views.js --languages '{...}' --article-title "Intermittent fasting" > /tmp/wt-metrics.json
+bun scripts/generate-pdf.js \
+  --metrics-file /tmp/wt-metrics.json \
+  --title "<report title, in the user's language>" \
+  --y-label "<value-axis title, in the user's language, e.g. 'Перегляди'>" \
+  --x-label "<time-axis title, in the user's language, e.g. 'Дата'>" \
+  --analysis "<the exact Step 3 text>"
 ```
 
-It returns:
+`--analysis-file` (or `-` for stdin) also works if the analysis is long — write it to a
+file first rather than trying to cram it into a single shell argument.
 
-- **`trend`** — `direction` (up/down/flat), `totalChangePct` (first vs last point), `regressionSlopePctOfMean` (overall trend strength, normalized), `halfOverHalfChangePct` (first-half vs second-half average, a sanity check against a trend driven by one outlier). **If `totalChangePct` and `halfOverHalfChangePct` disagree in sign, trust `direction`/`halfOverHalfChangePct`** — it means the very first or last data point is an outlier (e.g. a partial month) skewing the naive endpoint comparison.
-- **`anomalies`** — array of `{ timestamp, value, zScore, type: "spike"|"drop" }`, points that deviate from their local neighborhood by more than 2 standard deviations.
-- **`seasonality`** — `{ applicable, likelySeasonal, coefficientOfVariation, peakMonths, lowMonths, monthlyAverages }` when granularity is monthly with ≥12 data points; otherwise `{ applicable: false, reason }` — in that case, just say seasonality can't be assessed for this range/granularity rather than guessing.
+By default the PDF is written to **the current project's root directory** (the user's
+working directory, not the skill's own directory) as `wiki-trends-report_<timestamp>.pdf`
+— leave `--output` unset unless the user asked for a specific path/name. The generated
+PDF is a runtime output artifact — never commit it (already covered by
+`wiki-trends-report_*.pdf` in `.gitignore`).
 
-## Step 4: Write the conclusion
-
-Write the output in plain language, in the same language the user wrote their prompt in (same rule as Step 1 — don't default to English). **Never show the user raw field/variable names** (e.g. `regressionSlopePctOfMean`, `halfOverHalfChangePct`, `coefficientOfVariation`, `zScore`) — translate each metric into a clear plain-language statement backed by the actual numbers behind it (percentages, dates, magnitudes), so the reasoning stays traceable without exposing the JSON shape.
-
-For each case (article/language) analyzed, give a clear per-case readout based on the metrics from Step 3, one line per category:
-
-- **Trend** — direction and strength in plain words with a percentage (e.g. "views grew by roughly 24% over the period").
-- **Anomalies** — dates and nature of spikes/drops in plain words (e.g. "in March 2025 there was a sharp spike, several times above the usual level"); if there are none, say so.
-- **Seasonality** — whether it's seasonal, which months are peak/low; if it can't be assessed (too little data or non-monthly granularity), say so directly instead of guessing.
-
-Then write the final **Conclusion:**
-
-- **Only one case analyzed** — a conclusion for that single case: a short (2–4 sentence) but clear summary that synthesizes its trend + anomalies + seasonality into one picture.
-- **Two or more cases analyzed** — a comparative conclusion between the cases: which one is growing/declining fastest, whether anomalies coincide in time across cases (hinting at a shared external cause, e.g. a news event) or are case-specific, and how seasonality differs between them. This works the same way regardless of whether 2, 3, or more cases were analyzed.
-
-Every statement, in the per-case readout and in the Conclusion, must be grounded in the actual numbers from Step 3 (percentages, dates, magnitude of deviation) — never a vague phrase like "seems to have grown a bit."
+Tell the user where the PDF was written when done.
