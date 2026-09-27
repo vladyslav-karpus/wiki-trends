@@ -120,7 +120,6 @@ bun test
 - No caching of repeated requests within a conversation — a follow-up question
   about the same period re-fetches everything from the API.
 - No retry/backoff for Wikimedia API rate limiting.
-- The end-to-end cheap-model verification above hasn't been done yet.
 
 ## Iterative development plan
 
